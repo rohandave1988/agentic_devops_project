@@ -140,10 +140,11 @@ class Agent:
 
         # ── 7. VERIFY ────────────────────────────────────────────────────────
         if action_taken and not config.DRY_RUN:
+            # Non-daemon so the process stays alive until verification completes.
             threading.Thread(
                 target=verify_and_record,
                 args=(inc.id, plan.action, incident_start, self.prometheus, self.store),
-                daemon=True,
+                daemon=False,
             ).start()
 
 

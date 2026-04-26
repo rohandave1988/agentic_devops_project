@@ -124,7 +124,24 @@ class LLMClient:
             {"role": "user",   "content": user},
         ]
 
+        _INVESTIGATION_TOOLS = {"get_metrics", "get_recent_logs", "get_incident_history"}
+        called_tools: set[str] = set()
+        nudged = False
+
         for iteration in range(MAX_TOOL_ITERATIONS):
+            # Nudge the model to call submit_diagnosis when:
+            #   (a) all 3 investigation tools have been called, OR
+            #   (b) the model has had 3 turns (catches looping on fewer tools)
+            if not nudged and (called_tools >= _INVESTIGATION_TOOLS or iteration >= 3):
+                messages.append({
+                    "role":    "user",
+                    "content": (
+                        "You have gathered all the evidence. "
+                        "Now call submit_diagnosis with your findings."
+                    ),
+                })
+                nudged = True
+
             resp = requests.post(
                 f"{config.OLLAMA_URL}/api/chat",
                 json={
@@ -154,6 +171,7 @@ class LLMClient:
                 logger.info(f"LLM called tool: {name}")
                 if name == "submit_diagnosis":
                     return _diagnosis_from_dict(args)
+                called_tools.add(name)
                 result = runner.execute(name, args)
                 messages.append({
                     "role":         "tool",

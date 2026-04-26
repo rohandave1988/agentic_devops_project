@@ -11,8 +11,9 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL  = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 # ── Observability ─────────────────────────────────────────────────────────────
-PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://localhost:9090")
-LOKI_URL       = os.environ.get("LOKI_URL", "http://localhost:3100")
+PROMETHEUS_URL  = os.environ.get("PROMETHEUS_URL", "http://localhost:9090")
+LOKI_URL        = os.environ.get("LOKI_URL", "http://localhost:3100")
+RATE_WINDOW     = os.environ.get("PROMETHEUS_RATE_WINDOW", "2m")
 
 # ── Kubernetes ────────────────────────────────────────────────────────────────
 KUBE_CONTEXT      = os.environ.get("KUBE_CONTEXT", "kind-devops-agent")

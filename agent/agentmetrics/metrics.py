@@ -30,7 +30,7 @@ MTTR = Histogram(
     "Mean time to recovery in seconds.",
     buckets=[30, 60, 90, 120, 180, 300, 600],
 )
-LLM_CALLS = Histogram(
+LLM_CALLS = Counter(
     "agent_llm_calls_total", "LLM API calls by backend and result.", ["backend", "result"]
 )
 LLM_LATENCY = Histogram(

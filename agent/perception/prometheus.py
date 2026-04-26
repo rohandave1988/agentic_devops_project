@@ -29,21 +29,22 @@ class PrometheusClient:
         dep = config.TARGET_DEPLOYMENT
         qf  = self._query_first
 
+        w = config.RATE_WINDOW
         return ClusterMetrics(
             error_rate=qf(
                 # cluster mode
-                f'sum(rate(http_requests_total{{namespace="{ns}",status_code=~"5.."}}[2m]))'
-                f' / sum(rate(http_requests_total{{namespace="{ns}"}}[2m]))',
+                f'sum(rate(http_requests_total{{namespace="{ns}",status_code=~"5.."}}[{w}]))'
+                f' / sum(rate(http_requests_total{{namespace="{ns}"}}[{w}]))',
                 # local mode — buggy-app gauge
                 'app_error_rate',
             ),
             latency_p99_ms=qf(
-                f'histogram_quantile(0.99, sum(rate(http_request_duration_ms_bucket{{namespace="{ns}"}}[2m])) by (le))',
-                'histogram_quantile(0.99, sum(rate(http_request_duration_ms_bucket[2m])) by (le))',
+                f'histogram_quantile(0.99, sum(rate(http_request_duration_ms_bucket{{namespace="{ns}"}}[{w}])) by (le))',
+                f'histogram_quantile(0.99, sum(rate(http_request_duration_ms_bucket[{w}])) by (le))',
             ),
             cpu_usage=qf(
                 # cluster mode — ratio vs limits
-                f'sum(rate(container_cpu_usage_seconds_total{{namespace="{ns}",container="{dep}"}}[2m]))'
+                f'sum(rate(container_cpu_usage_seconds_total{{namespace="{ns}",container="{dep}"}}[{w}]))'
                 f' / sum(kube_pod_container_resource_limits{{namespace="{ns}",container="{dep}",resource="cpu"}})',
                 # local mode — psutil percent → 0-1 ratio
                 'app_cpu_usage_percent / 100',

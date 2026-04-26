@@ -18,7 +18,7 @@ Unlike [K8sGPT](https://github.com/k8sgpt-ai/k8sgpt) (diagnosis only, no autonom
 Every 10 seconds:
 
 ┌──────────────────────────────────────────────────────────────────────┐
-│  1. PERCEIVE   Prometheus (7 PromQL queries) + Loki available        │
+│  1. PERCEIVE   Prometheus (7 metrics, dual-mode PromQL) + Loki       │
 │  2. SLO CHECK  Skip LLM if all SLOs healthy (cost savings)           │
 │  3. REASON     Multi-turn tool-use loop — LLM calls tools to         │
 │                investigate, then submits structured Diagnosis         │
@@ -254,7 +254,7 @@ All settings via environment variables:
 | `COOLDOWN_PERIOD_SEC` | `120` | Minimum gap between identical actions |
 | `ROLLBACK_MIN_CONFIDENCE` | `0.6` | LLM confidence required to approve rollback |
 | `DRY_RUN` | `false` | Log actions without executing |
-| `AGENT_METRICS_PORT` | `:8080` | Prometheus metrics listen address |
+| `AGENT_METRICS_PORT` | `8080` | Prometheus metrics listen address |
 
 ---
 
@@ -265,7 +265,7 @@ All settings via environment variables:
 ├── agent/               # Self-healing agent (Python)
 │   ├── agentmetrics/       # Agent self-observability (Prometheus)
 │   ├── action/             # Kubernetes API actions (`kubernetes` client)
-│   ├── config/             # Environment variable configuration
+│   ├── config.py           # Environment variable configuration
 │   ├── memory/             # Incident store with outcome tracking
 │   ├── perception/         # Prometheus + Loki clients
 │   ├── planning/           # DecisionEngine — safety rules
