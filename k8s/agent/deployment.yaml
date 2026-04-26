@@ -1,0 +1,84 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-system
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devops-agent
+  namespace: agent-system
+  labels:
+    app: devops-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: devops-agent
+  template:
+    metadata:
+      labels:
+        app: devops-agent
+      annotations:
+        # Prometheus auto-discovers this pod and scrapes agent self-metrics
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "8080"
+        prometheus.io/path:   "/metrics"
+    spec:
+      serviceAccountName: devops-agent
+
+      containers:
+        - name: agent
+          image: devops-agent:latest
+          imagePullPolicy: Never        # kind loads the image locally
+
+          ports:
+            - containerPort: 8080
+              name: metrics
+
+          env:
+            - name: LLM_BACKEND
+              value: "claude"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-secrets
+                  key: anthropic-api-key
+            # In-cluster service URLs for Prometheus and Loki
+            - name: PROMETHEUS_URL
+              value: "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+            - name: LOKI_URL
+              value: "http://loki.monitoring.svc.cluster.local:3100"
+            - name: TARGET_NAMESPACE
+              value: "demo"
+            - name: TARGET_DEPLOYMENT
+              value: "buggy-app"
+            - name: AGENT_METRICS_PORT
+              value: ":8080"
+            - name: VERIFY_DELAY_SEC
+              value: "90"
+
+          resources:
+            requests:
+              cpu:    "50m"
+              memory: "64Mi"
+            limits:
+              cpu:    "200m"
+              memory: "128Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10

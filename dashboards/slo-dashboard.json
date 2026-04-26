@@ -1,0 +1,91 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "annotations": { "list": [] },
+  "title": "Self-Healing Agent — SLO Dashboard",
+  "uid": "slo-agent-001",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Error Rate vs SLO (1%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{namespace=\"demo\",status_code=~\"5..\"}[2m])) / sum(rate(http_requests_total{namespace=\"demo\"}[2m]))",
+          "legendFormat": "error_rate"
+        }
+      ],
+      "thresholds": {
+        "steps": [
+          { "color": "green", "value": null },
+          { "color": "red", "value": 0.01 }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "title": "P99 Latency vs SLO (200ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_ms_bucket{namespace=\"demo\"}[2m])) by (le))",
+          "legendFormat": "p99_latency_ms"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Pod Restarts (5m)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"demo\"}[5m]))",
+          "legendFormat": "restarts"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Ready Replicas",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "targets": [
+        {
+          "expr": "kube_deployment_status_replicas_ready{namespace=\"demo\",deployment=\"buggy-app\"}",
+          "legendFormat": "ready"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "CPU Usage",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"demo\",container=\"buggy-app\"}[2m]))",
+          "legendFormat": "cpu_cores"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Memory Usage (MB)",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(container_memory_working_set_bytes{namespace=\"demo\",container=\"buggy-app\"}) / 1024 / 1024",
+          "legendFormat": "memory_mb"
+        }
+      ]
+    }
+  ]
+}

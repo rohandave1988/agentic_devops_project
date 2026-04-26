@@ -1,0 +1,43 @@
+---
+# ServiceAccount the agent pod runs as.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: devops-agent
+  namespace: agent-system
+
+---
+# Least-privilege ClusterRole: only the verbs the agent actually calls.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: devops-agent
+rules:
+  # Pod operations: list for metrics, delete for restart_pods action
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+
+  # Deployment operations: get/update for scale and rollback actions
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "update"]
+
+  # ReplicaSet list: required to find previous revision for rollback
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: devops-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: devops-agent
+subjects:
+  - kind: ServiceAccount
+    name: devops-agent
+    namespace: agent-system

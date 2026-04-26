@@ -1,0 +1,30 @@
+# kind cluster configuration
+# Exposes ports for NodePort services and Prometheus/Grafana access
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: devops-agent
+
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # buggy-app NodePort
+      - containerPort: 30080
+        hostPort: 30080
+        protocol: TCP
+      # Grafana NodePort
+      - containerPort: 30300
+        hostPort: 30300
+        protocol: TCP
+      # Prometheus NodePort
+      - containerPort: 30090
+        hostPort: 30090
+        protocol: TCP
+
+  - role: worker
+  - role: worker

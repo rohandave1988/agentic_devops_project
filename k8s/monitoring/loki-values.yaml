@@ -1,0 +1,67 @@
+# Loki stack Helm values (loki-stack chart)
+# Single-binary mode for local development
+
+loki:
+  enabled: true
+  isDefault: false
+
+  config:
+    auth_enabled: false
+
+    server:
+      http_listen_port: 3100
+
+    ingester:
+      chunk_idle_period: 3m
+      chunk_block_size: 262144
+      chunk_retain_period: 1m
+      max_transfer_retries: 0
+
+    schema_config:
+      configs:
+        - from: "2024-01-01"
+          store: boltdb-shipper
+          object_store: filesystem
+          schema: v11
+          index:
+            prefix: index_
+            period: 24h
+
+    storage_config:
+      boltdb_shipper:
+        active_index_directory: /data/loki/boltdb-shipper-active
+        cache_location: /data/loki/boltdb-shipper-cache
+        shared_store: filesystem
+      filesystem:
+        directory: /data/loki/chunks
+
+    limits_config:
+      enforce_metric_name: false
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+
+  persistence:
+    enabled: false    # Ephemeral for local testing
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Promtail — ships pod logs to Loki
+promtail:
+  enabled: true
+  config:
+    lokiAddress: http://loki:3100/loki/api/v1/push
+
+    # Add pod metadata as log labels
+    snippets:
+      pipelineStages:
+        - docker: {}
+        - labels:
+            app:
+            namespace:
+            pod:
