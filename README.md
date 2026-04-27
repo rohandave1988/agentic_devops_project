@@ -2,13 +2,20 @@
 
 An autonomous SRE agent written in Python that monitors a Kubernetes cluster, detects SLO violations, uses an LLM to reason about root cause, takes corrective action, and **verifies the fix worked** — tracking real MTTR and resolution rate.
 
-Unlike [K8sGPT](https://github.com/k8sgpt-ai/k8sgpt) (diagnosis only, no autonomous action) or [kagent](https://github.com/kagent-dev/kagent) (framework only, no complete solution), this agent closes the full loop: **detect → act → verify → measure**.
+The agent closes the full loop: **detect → act → verify → measure**.
 
 > **MTTR** (Mean Time To Recovery) — the average time from when an SLO breach is first detected to when all SLOs return to healthy. This agent measures it precisely: the clock starts the moment a violation is detected, and stops when the post-action SLO re-check passes. The result is stored per incident and tracked as a Prometheus histogram (`agent_mttr_seconds`), so you can query p50/p90 MTTR in Grafana and prove the agent is actually healing things — not just taking actions.
 
-![Demo: CPU breach detected, LLM runs tool-use investigation loop, agent scales up, SLOs recover in 90s](docs/demo.gif)
+<img width="1400" height="820" alt="image" src="https://github.com/user-attachments/assets/6e0dabef-48d6-4269-a0c2-f9715a99799c" />
 
-![Grafana dashboard showing SLO recovery and MTTR after agent remediation](docs/grafana_dashboard.png)
+
+**Architecture Diagram:-
+**
+<img width="3543" height="1942" alt="image" src="https://github.com/user-attachments/assets/a8181615-3ff7-4e8d-8ab8-dea9129d7d4c" />
+
+
+
+
 
 ---
 
