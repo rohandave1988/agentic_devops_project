@@ -126,21 +126,26 @@ class LLMClient:
 
         _INVESTIGATION_TOOLS = {"get_metrics", "get_recent_logs", "get_incident_history"}
         called_tools: set[str] = set()
-        nudged = False
+        nudge_count = 0
 
         for iteration in range(MAX_TOOL_ITERATIONS):
-            # Nudge the model to call submit_diagnosis when:
-            #   (a) all 3 investigation tools have been called, OR
-            #   (b) the model has had 3 turns (catches looping on fewer tools)
-            if not nudged and (called_tools >= _INVESTIGATION_TOOLS or iteration >= 3):
-                messages.append({
-                    "role":    "user",
-                    "content": (
-                        "You have gathered all the evidence. "
-                        "Now call submit_diagnosis with your findings."
-                    ),
-                })
-                nudged = True
+            # Re-nudge every iteration once any investigation tool has been called
+            # or after 2 turns. Escalate language on repeated nudges so the model
+            # stops looping on investigation tools.
+            if called_tools or iteration >= 2:
+                nudge_count += 1
+                if nudge_count >= 3:
+                    nudge_msg = (
+                        "STOP. Do NOT call get_metrics, get_recent_logs, or "
+                        "get_incident_history again. You MUST call submit_diagnosis "
+                        "RIGHT NOW with your current findings. No other tool is allowed."
+                    )
+                else:
+                    nudge_msg = (
+                        "You have gathered enough evidence. "
+                        "Call submit_diagnosis now with your findings."
+                    )
+                messages.append({"role": "user", "content": nudge_msg})
 
             resp = requests.post(
                 f"{config.OLLAMA_URL}/api/chat",
@@ -165,7 +170,6 @@ class LLMClient:
             for tc in tool_calls:
                 name = tc["function"]["name"]
                 args = tc["function"].get("arguments", {})
-                # Ollama may encode arguments as a JSON string or as a dict
                 if isinstance(args, str):
                     args = json.loads(args)
                 logger.info(f"LLM called tool: {name}")
@@ -179,8 +183,27 @@ class LLMClient:
                     "tool_call_id": tc.get("id", ""),
                 })
 
-        raise RuntimeError(
-            f"LLM did not call submit_diagnosis within {MAX_TOOL_ITERATIONS} iterations"
+        # Fallback: LLM exhausted iterations — derive a safe diagnosis from the
+        # violation list in the user message so the agent still acts rather than
+        # silently skipping the incident.
+        logger.warning(
+            f"LLM did not call submit_diagnosis in {MAX_TOOL_ITERATIONS} iterations "
+            "— using rule-based fallback diagnosis"
+        )
+        cpu_breach = "CPU" in user.upper()
+        mem_breach = "MEMORY" in user.upper() or "MEM" in user.upper()
+        return Diagnosis(
+            anomalies=[line.strip() for line in user.splitlines()
+                       if line.strip() and not line.startswith("Investigate")],
+            root_cause=(
+                "High CPU load exceeds SLO threshold" if cpu_breach else
+                "High memory usage exceeds SLO threshold" if mem_breach else
+                "SLO violation detected — root cause undetermined by LLM"
+            ),
+            severity="high",
+            suggested_actions=["scale_up" if cpu_breach else "restart_pods"],
+            confidence=0.5,
+            reasoning="Rule-based fallback: LLM tool loop did not conclude within iteration limit.",
         )
 
 
