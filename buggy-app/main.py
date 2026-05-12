@@ -192,7 +192,7 @@ def fault_cpu():
     num_workers = min(os.cpu_count() or 2, 4)
 
     # Use subprocesses — threads can't bypass the GIL for real CPU pressure
-    burn_code = "import math, random\nwhile True: math.sqrt(random.random())"
+    burn_code = "import math, random\nwhile True: try:\n    math.sqrt(random.random())\nexcept ZeroDivisionError:\n    pass"
     for _ in range(num_workers):
         p = subprocess.Popen([sys.executable, "-c", burn_code])
         _cpu_processes.append(p)
