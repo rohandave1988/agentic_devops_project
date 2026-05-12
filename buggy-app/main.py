@@ -129,6 +129,8 @@ def healthz():
 @app.route("/api/data")
 def api_data():
     with _lock:
+        if not _state:  # Add this guard clause
+            return jsonify({"data": "ok", "timestamp": datetime.now(timezone.utc).isoformat()})
         latency    = _state["latency_ms"]
         err_rate   = _state["error_rate"]
         cascade    = _state["cascade"]
