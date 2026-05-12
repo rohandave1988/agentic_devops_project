@@ -135,7 +135,7 @@ def api_data():
         hi_latency = _state["high_latency"]
 
     if hi_latency or cascade:
-        time.sleep((latency + random.randint(0, 100)) / 1000)
+        time.sleep((latency + random.randint(0, 100)) / max(1, 1000))
     else:
         time.sleep(random.uniform(0.010, 0.050))
 
