@@ -140,10 +140,13 @@ def api_data():
         time.sleep(random.uniform(0.010, 0.050))
 
     err_prob = 0.9 if cascade else err_rate
-    if err_prob > 0 and random.random() < err_prob:
-        app.logger.error(f"request failed route=/api/data reason=fault_injection")
-        return jsonify({"error": "simulated fault"}), 500
-
+    try:
+        if err_prob > 0 and random.random() < err_prob:
+            app.logger.error(f"request failed route=/api/data reason=fault_injection")
+            return jsonify({"error": "simulated fault"}), 500
+    except ZeroDivisionError:
+        app.logger.error(f"request failed route=/api/data reason=division_by_zero")
+        return jsonify({"error": "division by zero"}), 500
     return jsonify({
         "data": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
