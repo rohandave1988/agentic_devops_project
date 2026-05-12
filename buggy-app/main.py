@@ -189,6 +189,7 @@ def fault_cpu():
             return jsonify({"fault": "cpu_spike", "status": "already_active",
                             "workers": len(_cpu_processes)})
 
+    # Guard clause to prevent division by zero
     num_workers = min(os.cpu_count() or 2, 4)
 
     # Use subprocesses — threads can't bypass the GIL for real CPU pressure
