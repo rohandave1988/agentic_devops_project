@@ -134,10 +134,10 @@ def api_data():
         cascade    = _state["cascade"]
         hi_latency = _state["high_latency"]
 
-    if hi_latency or cascade:
-        time.sleep((latency + random.randint(0, 100)) / 1000)
+    if latency == 0:
+        time.sleep(0)
     else:
-        time.sleep(random.uniform(0.010, 0.050))
+        time.sleep((latency + random.randint(0, 100)) / 1000)
 
     err_prob = 0.9 if cascade else err_rate
     if err_prob > 0 and random.random() < err_prob:
