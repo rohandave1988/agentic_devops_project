@@ -134,6 +134,9 @@ def api_data():
         cascade    = _state["cascade"]
         hi_latency = _state["high_latency"]
 
+    if not latency:  # Add this guard clause to prevent division by zero
+        return jsonify({"error": "latency is zero"}), 500
+
     if hi_latency or cascade:
         time.sleep((latency + random.randint(0, 100)) / 1000)
     else:
