@@ -242,6 +242,9 @@ def api_data():
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
+    if not _latency_samples:
+        return jsonify({'data': 'ok', 'avg_response_ms': 0.0, 'timestamp': datetime.now(timezone.utc).isoformat()}), 200
+
     # Always compute average response time.
     # _get_avg_response_ms() has no guard for an empty window — programmatic bug.
     # Raises ZeroDivisionError when _latency_samples is empty (after pod start or
