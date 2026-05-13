@@ -16,7 +16,7 @@ config.COOLDOWN_SEC       = 120
 config.ROLLBACK_MIN_CONF  = 0.6
 
 from perception.prometheus import ClusterMetrics
-from reasoning.llm import Diagnosis
+from agents.base import Diagnosis
 from planning.decision import DecisionEngine
 
 

@@ -1,66 +1,73 @@
-# Agentic DevOps Self-Healing Kubernetes System
+# Agentic DevOps — Self-Healing Kubernetes System
 
-An autonomous SRE agent written in Python that monitors a Kubernetes cluster, detects SLO violations, uses an LLM to reason about root cause, takes corrective action, and **verifies the fix worked** — tracking real MTTR and resolution rate.
+An autonomous SRE agent written in Python that monitors a Kubernetes cluster, detects SLO violations, runs a **single-call LLM diagnosis** to determine root cause, and takes corrective action — including writing and PR-ing code fixes — before verifying recovery. Tracks real MTTR per incident.
 
-The agent closes the full loop: **detect → act → verify → measure**.
+The agent closes the full loop: **detect → investigate → HITL → safety-gate → act → verify → remember**.
 
-> **MTTR** (Mean Time To Recovery) — the average time from when an SLO breach is first detected to when all SLOs return to healthy. This agent measures it precisely: the clock starts the moment a violation is detected, and stops when the post-action SLO re-check passes. The result is stored per incident and tracked as a Prometheus histogram (`agent_mttr_seconds`), so you can query p50/p90 MTTR in Grafana and prove the agent is actually healing things — not just taking actions.
+> **MTTR** (Mean Time To Recovery) — the clock starts the moment an SLO breach is detected, stops when the post-action SLO re-check passes. Stored per incident as a Prometheus histogram (`agent_mttr_seconds`), queryable in Grafana.
 
-<img src="./docs/demo_short.gif"/>
+<img width="1400" height="820" alt="demo screenshot" src="https://github.com/user-attachments/assets/6e0dabef-48d6-4269-a0c2-f9715a99799c" />
 
-
-**Architecture Diagram:-
-**
-
-
-<img width="3543" height="1942" alt="image" src="https://github.com/user-attachments/assets/a8181615-3ff7-4e8d-8ab8-dea9129d7d4c" />
-
-
-
-
+**Architecture — Drop 2 (single-call diagnosis + HITL + code patching):**
+<img width="3543" height="1942" alt="architecture diagram" src="https://github.com/user-attachments/assets/a8181615-3ff7-4e8d-8ab8-dea9129d7d4c" />
 
 ---
 
-## How It Works
+## What It Does
 
 ```
 Every 10 seconds:
 
-┌──────────────────────────────────────────────────────────────────────┐
-│  1. PERCEIVE   Prometheus (7 metrics, dual-mode PromQL) + Loki       │
-│  2. SLO CHECK  Skip LLM if all SLOs healthy (cost savings)           │
-│  3. REASON     Multi-turn tool-use loop — LLM calls tools to         │
-│                investigate, then submits structured Diagnosis         │
-│                  ├─ get_metrics       (ClusterMetrics snapshot)      │
-│                  ├─ get_recent_logs   (Loki — only if needed)        │
-│                  ├─ get_incident_history (what was tried before)     │
-│                  └─ submit_diagnosis  (ends the loop)                │
-│  4. PLAN       DecisionEngine applies safety rules                   │
-│  5. ACT        Kubernetes API: restart / scale / rollback            │
-│  6. REMEMBER   Persist incident to JSON store                        │
-│  7. VERIFY     Re-check SLOs after 90s → record MTTR                │
-└──────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│  1. PERCEIVE    Prometheus (~15 PromQL queries) + Loki logs              │
+│  2. SLO CHECK   Skip LLM if all SLOs healthy — no wasted tokens          │
+│  3. INVESTIGATE OrchestratorAgent — single LLM call with:               │
+│                   - pre-fetched metrics snapshot                         │
+│                   - pre-fetched Loki logs (last 2 min, 20s retry)        │
+│                   - past incident history from SQLite                    │
+│                   → returns JSON: {action, root_cause, severity,         │
+│                                    confidence, reasoning}                │
+│  4. HITL        Gate 1 — operator approves action (with timeout)         │
+│  5. PLAN        DecisionEngine — hard safety gates, cooldown, bounds     │
+│  6. ACT         restart_pods / scale_up / rollback / patch_code          │
+│                   patch_code: CodePatchAgent (own ReAct loop)           │
+│                     Tools: list_source_files, read_function (AST),      │
+│                            replace_in_file, propose_patch               │
+│                   → HITL Gate 2: diff review before any git ops         │
+│                   → GitOps: stash → pull → branch → commit → push       │
+│                             → gh pr create → PR URL                     │
+│  7. REMEMBER    SQLite incident store + episodic memory                  │
+│  8. VERIFY      Re-check SLOs after 20s → record MTTR → feed back       │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ```mermaid
 graph TD
-    A[Prometheus + Loki] -->|7 PromQL queries| B[SLO Checker]
+    A[Prometheus + Loki] -->|~15 PromQL| B[SLO Checker]
     B -->|healthy| C[Sleep 10s]
-    B -->|violated| D[LLM Tool-Use Loop\nClaude / Ollama]
+    B -->|violated| D[Pre-fetch context\nmetrics + logs + history]
 
-    D -->|tool call: get_metrics| E[ToolRunner]
-    D -->|tool call: get_recent_logs| E
-    D -->|tool call: get_incident_history| E
-    E -->|tool results| D
+    D --> E[OrchestratorAgent\nSingle LLM call]
+    E -->|JSON diagnosis| F[root_cause · severity · confidence · action]
 
-    D -->|submit_diagnosis| F[DecisionEngine\nSafety Rules]
-    F -->|blocked| G[Log & Skip]
-    F -->|approved| H[Kubernetes API\nrestart / scale / rollback]
-    H --> I[IncidentStore\nJSON memory]
-    H -->|daemon thread 90s| J[SLO Verifier]
-    J -->|resolved| K[Record MTTR]
-    J -->|unresolved| L[Log open incident]
-    K --> M[Prometheus Metrics\nagent_mttr_seconds\nagent_verifications_total]
+    F -->|HUMAN_IN_LOOP=true| G[HITL Gate 1\naction selection]
+    G --> H[DecisionEngine\nSafety Rules]
+    F --> H
+
+    H -->|blocked| I[no_action + audit log]
+    H -->|approved| J{action?}
+
+    J -->|restart/scale/rollback| K[Kubernetes API]
+    J -->|patch_code| L[CodePatchAgent\nReAct loop\nlist_source_files\nread_function AST\nreplace_in_file]
+
+    L --> M[HITL Gate 2\ndiff review]
+    M -->|approved| N[GitOps: stash → pull → branch\ncommit → push → gh pr create → PR URL]
+    M -->|rejected| O[discard — no cluster change]
+
+    K --> P[SQLite Incident Store]
+    K -->|20s thread| Q[SLO Verifier]
+    Q -->|recovered| R[Record MTTR\nfeed back to memory]
+    Q -->|unresolved| S[Escalation webhook]
 ```
 
 ---
@@ -70,89 +77,228 @@ graph TD
 | Layer | Package | What it does |
 |---|---|---|
 | Perception | `perception/` | Polls Prometheus + Loki; builds `ClusterMetrics` snapshot |
-| Reasoning | `reasoning/` | Multi-turn tool-use loop — LLM calls `get_metrics`, `get_recent_logs`, `get_incident_history`, then `submit_diagnosis` |
-| Planning | `planning/` | `DecisionEngine` enforces cooldown, replica bounds, confidence threshold |
-| Action | `action/` | Executes against Kubernetes API via `kubernetes` Python client (no kubectl subprocess) |
-| Memory | `memory/` | Persists `Incident` records with outcome verification results |
-| Metrics | `agentmetrics/` | Exposes `/metrics` endpoint — the agent monitors itself |
-| Verification | `utils/verifier.py` | Daemon thread: re-checks SLOs 90s post-action, records MTTR |
+| Investigation | `agents/orchestrator.py` | Single LLM call with pre-fetched context; returns structured JSON diagnosis |
+| Code Patching | `agents/specialists/code_patch.py` | `CodePatchAgent` — ReAct loop with AST-based tools; generates targeted patches |
+| HITL | `hitl/` | Gate 1: action selection. Gate 2: unified diff review before git ops |
+| Planning | `planning/` | `DecisionEngine` — cooldown, replica bounds, confidence thresholds, ALLOW_CODE_PATCHES |
+| Action | `action/` | Kubernetes API calls + full `patch_code` pipeline |
+| Memory | `memory/` | SQLite: incident records + `AgentMemory` (episodic, per-component) |
+| Tracing | `tracing/` | OTel spans, decision audit trail, Langfuse integration |
+| Metrics | `agentmetrics/` | Agent's own `/metrics` — MTTR, resolution rate, blocked actions |
+| Verification | `utils/verifier.py` | Background thread: re-checks SLOs, records MTTR, feeds outcome back |
 
 ---
 
-## LLM Tool-Use Loop
+## Investigation — Single LLM Call
 
-Instead of a single prompt that hands all data to the LLM upfront, the agent runs a **multi-turn tool-use loop**. The LLM drives its own investigation:
+The investigation step is a single structured LLM call with all context pre-fetched. There is no multi-hop tool loop for diagnosis.
 
 ```
-User:      "SLO violations detected: CPU_BREACH 91% > 80%, latency P99 340ms > 200ms.
-            Investigate and diagnose."
-
-LLM →      tool_call: get_metrics
-ToolRunner → { cpu_usage: 0.91, latency_p99_ms: 340, slo_cpu: 0.80, ... }
-
-LLM →      tool_call: get_recent_logs
-ToolRunner → "ERROR request failed reason=fault_injection\nERROR ..."
-
-LLM →      tool_call: get_incident_history
-ToolRunner → [{ action: "scale_up", slo_recovered: true, mttr_sec: 87 }, ...]
-
-LLM →      tool_call: submit_diagnosis
-           { root_cause: "CPU saturation from tight compute loop in buggy-app",
-             severity: "high", suggested_actions: ["scale_up", "restart_pods"],
-             confidence: 0.88 }
+Why: multi-hop tool-calling loops (5-10 LLM calls per incident) were fragile
+with local Ollama models — the model frequently responded with prose instead
+of a tool call, collapsing the chain to no_action. A single well-structured
+prompt with all context pre-loaded is 10× more reliable.
 ```
 
-**Why this matters vs. a single prompt:**
-- The LLM skips Loki entirely if the root cause is obvious from metrics — no wasted tokens
-- Incident history lets the LLM avoid repeating an action that already failed
-- `submit_diagnosis` uses a typed tool schema — no fragile JSON parsing or regex
-- Works with Claude (`stop_reason: "tool_use"`) and Ollama (`mistral-nemo`, `llama3.1`, `qwen2.5`)
+The pre-fetch step collects:
+- Current metrics snapshot (error rates, latency, CPU, memory, pod restarts, replicas)
+- Loki logs from the last 2 minutes. If Loki returns nothing (Promtail scrape lag is typically 15–30s), the agent waits 20s and retries with a 5-minute window.
+- Past incident history from SQLite (last 5 incidents: root cause, action taken, recovered y/n)
+
+The prompt gives the LLM a strict decision tree and asks for a single JSON object:
+
+```json
+{
+  "action": "patch_code",
+  "root_cause": "ZeroDivisionError in _get_avg_response_ms() — empty list",
+  "severity": "high",
+  "confidence": 0.87,
+  "reasoning": "ZeroDivisionError in logs, confirmed 5xx rate at 82%"
+}
+```
+
+One additional rule fires in code (not in the prompt): if a named Python exception (`ZeroDivisionError`, `IndexError`, etc.) is found in the logs and the chosen action is `patch_code`, confidence is floored at 0.80. This prevents the model from underselling confidence when the stack trace is unambiguous.
+
+---
+
+## Human-in-the-Loop (HITL)
+
+Set `HUMAN_IN_LOOP=true` to activate both gates. Both have `HUMAN_REVIEW_TIMEOUT_SEC` auto-approve.
+
+### Gate 1 — Action Selection (before DecisionEngine)
+
+```
+╭─ HITL Review ────────────────────────────────────────────────╮
+│ Severity:    HIGH                                             │
+│ Root cause:  ZeroDivisionError in _get_avg_response_ms()     │
+│ Confidence:  82%                                             │
+│                                                               │
+│ AI recommends: patch_code                                     │
+│                                                               │
+│ 1) restart_pods    2) scale_up    3) scale_down              │
+│ 4) rollback        5) patch_code  6) no_action               │
+╰───────────────────────────────────────────────────────────────╯
+Choose [1-6] or Enter to accept AI recommendation:
+```
+
+Operator can override the AI's recommendation. If they select a different action, the confidence check in `DecisionEngine` is bypassed — the human takes responsibility.
+
+### Gate 2 — Diff Review (patch_code only, before any git ops)
+
+```diff
+--- a/main.py
++++ b/main.py
+@@ -42,1 +42,1 @@
+-    return sum(_latency_samples) / len(_latency_samples)
++    return sum(_latency_samples) / len(_latency_samples) if _latency_samples else 0.0
+```
+
+```
+Approve patch? [y/n] (auto-approve in 60s):
+```
+
+`[y]` → `git stash → pull → branch → commit → push → gh pr create` → PR URL logged  
+`[n]` → patch discarded, no cluster changes made
+
+---
+
+## Code Patching Pipeline (`patch_code`)
+
+When infrastructure remediation isn't sufficient, the agent can propose and PR a code fix.
+
+### Why function-level tools instead of full-file reads
+
+Small local LLMs (7B parameters) struggle to process a 500-line file reliably inside a tool-calling loop. Two tools make this tractable:
+
+- **`read_function(file_path, function_name)`** — uses Python's `ast` module to extract exactly one function. A typical Flask handler is ~15 lines. The LLM receives only what it needs.
+- **`replace_in_file(file_path, old_code, new_code, description, confidence)`** — accepts a 2–3 line targeted replacement instead of the full file rewrite. Validates syntax via `ast.parse` before accepting; returns `REJECTED: syntax error` and lets the model retry.
+
+```
+CodePatchAgent (own ReAct loop, up to 10 steps)
+
+Preferred path (3 tool calls):
+  1. list_source_files()
+  2. read_function("main.py", "_get_avg_response_ms")
+     → returns ~15 lines via AST extraction
+  3. replace_in_file("main.py", <buggy lines>, <fixed lines>, description, confidence)
+     → validates ast.parse() before accepting
+     → returns "Fix applied." or "REJECTED: ..."
+
+Fallback path (if replace_in_file rejects):
+  1. list_source_files()
+  2. read_source_file("main.py")   ← full file, only if needed
+  3. propose_patch("main.py", <complete new content>, description, confidence)
+     → validates ast.parse() + checks content length ≥ 60% of original
+```
+
+### GitOps step
+
+After the patch is accepted and HITL Gate 2 passes:
+
+```
+git stash --include-untracked   (clean working tree)
+git fetch origin main
+git checkout main
+git pull --ff-only origin main
+git checkout -b agent-fix/<incident_id>
+git add buggy-app/main.py
+git commit -m "fix: <description>\n\nIncident: ...\nConfidence: ..."
+git push origin <branch>
+gh pr create --title "fix(main): ..." --body "## Summary\n..."
+→ PR URL printed in logs
+```
+
+The PR body includes incident metadata, root cause, confidence, and a checklist test plan.
+
+Safety gates on `patch_code`:
+- `ALLOW_CODE_PATCHES=false` → hard block, not bypassable by human override
+- `PATCH_MIN_CONFIDENCE` (default 0.75) → soft block, bypassed if human explicitly selected `patch_code`
+
+### Programmatic bug injection
+
+The demo bug is a real code defect in `buggy-app/main.py`: `_get_avg_response_ms()` divides by `len(_latency_samples)` with no empty-list guard.
+
+Activate it two ways:
+```bash
+curl -X POST http://localhost:30080/fault/code_bug   # HTTP endpoint
+# or set CODE_BUG_ACTIVE=1 in the app's environment
+```
 
 ---
 
 ## SLOs Enforced
 
-| Metric | Threshold | Breach triggers |
+| Metric | Threshold | Typical response |
 |---|---|---|
-| Error rate | < 1% | `restart_pods` |
+| 5xx error rate | < 1% | `restart_pods` or `patch_code` |
+| 4xx error rate | < 5% | `rollback` or `restart_pods` |
 | P99 latency | < 200ms | `restart_pods` or `scale_up` |
 | CPU usage | < 80% | `scale_up` |
-| Memory usage | < 85% | `restart_pods` |
-| Pod restarts | ≤ 3 / 5 min | `restart_pods` |
-| Ready replicas | = desired | `restart_pods` |
+| CPU throttle | < 25% | `scale_up` |
+| Memory usage | < 60% | `restart_pods` |
+| OOM kills | = 0 | `restart_pods` |
+| Active requests | ≤ 50 | `scale_up` |
 
 ---
 
 ## Safety Constraints
 
-The agent never acts blindly. Every action passes through the `DecisionEngine`:
+Every action passes through `DecisionEngine` before execution. The LLM never calls Kubernetes directly.
 
-| Guard | Rule |
-|---|---|
-| Cooldown | Same action cannot repeat within 120s |
-| Replica bounds | Will not scale below 1 or above 6 |
-| Severity gate | Scale-down blocked during `critical`/`high` incidents |
-| Confidence check | Rollback requires ≥ 60% LLM confidence |
+| Guard | Rule | Bypassable? |
+|---|---|---|
+| Code patch enable | `ALLOW_CODE_PATCHES` must be `true` | No — hard gate |
+| Cooldown | Same action can't repeat within 30s | No |
+| Replica upper bound | Will not scale above `MAX_REPLICAS` (default 6) | No |
+| Replica lower bound | Will not scale below `MIN_REPLICAS` (default 1) | No |
+| Severity gate | Scale-down blocked during `critical`/`high` incidents | No |
+| Rollback confidence | Requires ≥ 70% LLM confidence | Yes — human override |
+| Patch confidence | Requires ≥ 75% LLM confidence | Yes — human override |
 
 ---
 
-## Agent Self-Observability
+## Observability — Four Layers
 
-The agent exposes its own `Prometheus` metrics at `:8080/metrics`:
+### 1. Structured Colored Logging
 
-| Metric | Description |
-|---|---|
-| `agent_cycles_total` | Total polling cycles |
-| `agent_slo_checks_total{result}` | Healthy vs violated cycles |
-| `agent_incidents_total{severity}` | Incidents by LLM-assessed severity |
-| `agent_actions_executed_total{action}` | Actions dispatched |
-| `agent_actions_blocked_total{action,reason}` | Safety layer activity |
-| `agent_verifications_total{action,result}` | Did the fix work? |
-| `agent_mttr_seconds` | Histogram: time from breach to SLO recovery |
-| `agent_llm_calls_total{backend,result}` | LLM call success/error rate |
-| `agent_llm_latency_seconds{backend}` | LLM call latency histogram |
+```
+10:23:45  INFO      orchestrator         investigation started — 2 violations: ERROR_RATE_BREACH; LATENCY_P99_BREACH
+                                         incident_id=run-1778297  violations=2
+10:23:46  INFO      orchestrator         invoking LLM for diagnosis — model=qwen2.5:7b
+10:23:52  INFO      orchestrator         diagnosis ready — HIGH | patch_code | confidence=87% | ZeroDivisionError in _get_avg_response_ms()
+```
 
-Import `dashboards/agent-dashboard.json` into Grafana to see resolution rate, MTTR, and the safety layer in real time.
+Per-component accent colors, two-line format (bold message + detail fields), OTel trace ID on every line.
+
+### 2. OpenTelemetry → Jaeger
+
+Distributed tracing across every component. Spans for each agent step, LLM call, tool execution.
+
+```bash
+docker run -p 16686:16686 -p 4317:4317 jaegertracing/all-in-one
+# set OTLP_ENDPOINT=localhost:4317 in .env
+# open http://localhost:16686
+```
+
+### 3. Decision Audit Trail (SQLite)
+
+Tracks reasoning quality at each step — what was decided and whether it was correct.
+
+```python
+from tracing.decisions import show_chain
+show_chain("run-17431234567")
+# slo_check → orchestrator → decision_engine → executor → verifier
+```
+
+### 4. Langfuse (LLM call tracing)
+
+One trace per investigation. Token counts, latency, inputs/outputs visible per call.
+
+```bash
+docker compose -f docker-compose.langfuse.yml up -d
+# open http://localhost:3000 → create project → paste keys into .env
+# set LANGFUSE_ENABLED=true
+```
 
 ---
 
@@ -160,110 +306,120 @@ Import `dashboards/agent-dashboard.json` into Grafana to see resolution rate, MT
 
 | Component | Technology |
 |---|---|
-| Cluster | [kind](https://kind.sigs.k8s.io/) — 3-node local Kubernetes |
-| Agent | Python 3.12, `kubernetes`, `prometheus-client` |
-| LLM | Claude API (`claude-sonnet-4-6`) or Ollama (`mistral`) |
-| Observability | Prometheus + Loki + Grafana via Helm |
-| Target app | Python Flask server with fault-injection endpoints |
-| CI | GitHub Actions — build, vet, test, Docker |
+| Cluster | [kind](https://kind.sigs.k8s.io/) — local 3-node Kubernetes |
+| Agent | Python 3.12, `langchain-core`, `kubernetes`, `prometheus-client` |
+| LLM | Ollama (`qwen2.5:7b`) or Claude API (`claude-sonnet-4-6`) |
+| Diagnosis | Single structured LLM call with pre-fetched context |
+| Code patching | `CodePatchAgent` (ReAct) + AST-based tools + `GitOps` (`gh` CLI) |
+| Distributed tracing | OpenTelemetry SDK → OTLP → Jaeger |
+| LLM tracing | Langfuse (self-hosted) |
+| Decision audit | Custom SQLite-backed decision log |
+| Observability | Prometheus + Loki + Grafana (Helm) |
+| Target app | Python Flask with fault-injection endpoints + real code bugs |
+| CI | GitHub Actions — lint, test, Docker build |
 
 ---
 
 ## Quick Start
 
-**Prerequisites:** Docker Desktop, `kind`, `kubectl`, `helm`, and an Anthropic API key (or Ollama running locally).
+**Prerequisites:** Docker Desktop, `kind`, `kubectl`, `helm`, `gh` CLI, Python 3.12+
 
-### Step 1 — First-time setup
+### 1 — First-time cluster setup
 
 ```bash
-./scripts/setup.sh
+./scripts/install.sh
 ```
 
-Creates a 3-node kind cluster, installs Prometheus + Loki + Grafana via Helm, and deploys the buggy-app. Run once.
+Creates a 3-node kind cluster, installs Prometheus/Loki/Grafana via Helm, builds and loads `buggy-app`.
 
-### Step 2 — Start the agent
+### 2 — Configure
 
 ```bash
 cd agent
-cp .env.example .env          # first time only
+cp .env.example .env
+# Edit .env — set LLM_BACKEND, API key, ALLOW_CODE_PATCHES
 ```
 
-Edit `.env` and set your API key:
-```
+Minimum config:
+```bash
+LLM_BACKEND=ollama
+OLLAMA_MODEL=qwen2.5:7b
+# or:
 LLM_BACKEND=claude
-ANTHROPIC_API_KEY=sk-ant-...
+# ANTHROPIC_API_KEY set in your shell environment
 ```
 
-Then run:
+### 3 — Start the agent
+
 ```bash
-python main.py
+./scripts/run.sh
 ```
 
-The agent starts polling every 10 seconds. Terminal output shows each phase in colour.
+Starts port-forwards, load generator, and the agent. All in one command.
 
-### Step 3 — Break something
-
-In a separate terminal, inject a fault:
+### 4 — Inject a fault
 
 ```bash
+# Infrastructure faults (scale/restart/rollback)
+curl -X POST http://localhost:30080/fault/errors   # high 5xx rate
 curl -X POST http://localhost:30080/fault/cpu      # CPU spike
-curl -X POST http://localhost:30080/fault/errors   # high error rate
 curl -X POST http://localhost:30080/fault/memory   # memory leak
-curl -X POST http://localhost:30080/fault/reset    # back to healthy
+curl -X POST http://localhost:30080/fault/latency  # high latency
+
+# Code-level bug (triggers patch_code demo)
+curl -X POST http://localhost:30080/fault/code_bug  # ZeroDivisionError on every request
+
+# Reset
+curl -X POST http://localhost:30080/fault/reset
 ```
 
-The agent detects the SLO breach within one poll cycle, runs the LLM tool-use investigation, takes action, and verifies recovery — all automatically.
+### 5 — Full patch_code HITL demo
 
-### Step 4 — View dashboards
+```bash
+./scripts/run.sh --demo-patch
+```
+
+Injects the `code_bug` fault 45s after startup. When the SLO breaches:
+1. Agent collects metrics + logs + history, makes one LLM call, identifies `ZeroDivisionError` in `_get_avg_response_ms()`
+2. **Gate 1**: choose `patch_code` at the terminal prompt
+3. `CodePatchAgent` calls `read_function()` to extract the buggy function (~15 lines), calls `replace_in_file()` with the fix
+4. **Gate 2**: unified diff shown — type `y` to commit and open a PR
+5. `gh pr create` fires → PR URL printed in logs
+
+### 6 — Dashboards
 
 ```
-Grafana:    http://localhost:30300   (admin / admin123)
+Grafana:    http://localhost:30300   admin / admin123
 Prometheus: http://localhost:30090
 App:        http://localhost:30080
+Langfuse:   http://localhost:3000   (after docker compose up)
+Jaeger:     http://localhost:16686  (after docker run jaeger)
 ```
-
-Import `dashboards/slo-dashboard.json` and `dashboards/agent-dashboard.json` into Grafana to see SLO status and MTTR.
 
 ---
 
-## Run Agent Inside the Cluster
-
-```bash
-# Build and load image
-docker build -t devops-agent:latest agent/
-kind load docker-image devops-agent:latest --name devops-agent
-
-# Create secret with API key
-kubectl create secret generic agent-secrets \
-  --from-literal=anthropic-api-key=$ANTHROPIC_API_KEY \
-  -n agent-system
-
-# Deploy
-kubectl apply -f k8s/agent/rbac.yaml
-kubectl apply -f k8s/agent/deployment.yaml
-
-# Check
-kubectl logs -f deployment/devops-agent -n agent-system
-```
-
-The agent runs with a minimal-privilege `ServiceAccount` (only the RBAC verbs it actually needs).
-
----
-
-## Configuration
-
-All settings via environment variables:
+## Configuration Reference
 
 | Variable | Default | Description |
 |---|---|---|
 | `LLM_BACKEND` | `ollama` | `"claude"` or `"ollama"` |
 | `ANTHROPIC_API_KEY` | — | Required when `LLM_BACKEND=claude` |
+| `OLLAMA_MODEL` | `qwen2.5:7b` | Local Ollama model name |
+| `PROMETHEUS_RATE_WINDOW` | `30s` | PromQL rate window — shorter = faster signal |
 | `AGENT_POLL_INTERVAL_SEC` | `10` | How often to check SLOs |
-| `VERIFY_DELAY_SEC` | `90` | Seconds to wait before post-action SLO check |
-| `COOLDOWN_PERIOD_SEC` | `120` | Minimum gap between identical actions |
-| `ROLLBACK_MIN_CONFIDENCE` | `0.6` | LLM confidence required to approve rollback |
+| `VERIFY_DELAY_SEC` | `20` | Seconds before post-action SLO re-check |
+| `COOLDOWN_PERIOD_SEC` | `30` | Minimum gap between identical actions |
+| `ROLLBACK_MIN_CONFIDENCE` | `0.70` | Min LLM confidence to approve rollback |
 | `DRY_RUN` | `false` | Log actions without executing |
-| `AGENT_METRICS_PORT` | `8080` | Prometheus metrics listen address |
+| `HUMAN_IN_LOOP` | `false` | Pause at both HITL gates before action |
+| `HUMAN_REVIEW_TIMEOUT_SEC` | `60` | Auto-approve after N seconds |
+| `ALLOW_CODE_PATCHES` | `false` | Enable `patch_code` action (hard gate) |
+| `PATCH_MIN_CONFIDENCE` | `0.75` | Min LLM confidence for `patch_code` |
+| `AUTO_DEPLOY_PATCH` | `false` | Build + deploy after PR creation |
+| `APP_SOURCE_DIR` | — | Local path to app source for `CodePatchAgent` |
+| `LANGFUSE_ENABLED` | `false` | Enable Langfuse LLM tracing |
+| `OTLP_ENDPOINT` | — | OTel gRPC endpoint (e.g. `localhost:4317`) |
+| `AGENT_METRICS_PORT` | `8080` | Prometheus metrics listen port |
 
 ---
 
@@ -271,25 +427,48 @@ All settings via environment variables:
 
 ```
 .
-├── agent/               # Self-healing agent (Python)
-│   ├── agentmetrics/       # Agent self-observability (Prometheus)
-│   ├── action/             # Kubernetes API actions (`kubernetes` client)
-│   ├── config.py           # Environment variable configuration
-│   ├── memory/             # Incident store with outcome tracking
-│   ├── perception/         # Prometheus + Loki clients
-│   ├── planning/           # DecisionEngine — safety rules
-│   ├── reasoning/          # LLM client + root cause analyzer
-│   └── utils/              # SLO checker + post-action verifier
-├── buggy-app/              # Fault-injectable Python Flask server
-├── dashboards/             # Grafana dashboard JSON
-│   ├── slo-dashboard.json  # Application SLO metrics
-│   └── agent-dashboard.json # Agent self-observability
-├── k8s/
-│   ├── agent/              # Agent Kubernetes manifests + RBAC
-│   ├── buggy-app/          # App Deployment, Service, HPA
-│   ├── base/               # kind cluster config
-│   └── monitoring/         # Helm values for Prometheus + Loki
-└── scripts/
-    ├── setup.sh            # One-command cluster setup
-    └── demo.sh             # Fault injection demo script
+├── agent/
+│   ├── main.py                   ← entry point — 8-step agent loop
+│   ├── config.py                 ← all config from env vars
+│   ├── logging_setup.py          ← structured colored logs + OTel trace correlation
+│   ├── agents/
+│   │   ├── orchestrator.py       ← OrchestratorAgent — single LLM call diagnosis
+│   │   ├── specialists/
+│   │   │   └── code_patch.py     ← CodePatchAgent — ReAct loop with AST tools
+│   │   ├── base.py               ← IncidentContext, Finding, Diagnosis dataclasses
+│   │   ├── memory.py             ← AgentMemory — SQLite episodic memory
+│   │   └── llm.py                ← build_llm() factory (Claude + Ollama)
+│   ├── hitl/
+│   │   └── review.py             ← Gate 1: action select · Gate 2: diff review
+│   ├── perception/
+│   │   ├── prometheus.py         ← ~15 PromQL queries → ClusterMetrics
+│   │   └── loki.py               ← Loki log queries
+│   ├── planning/
+│   │   └── decision.py           ← DecisionEngine + safety gates + ActionPlan
+│   ├── action/
+│   │   ├── executor.py           ← Kubernetes API executor + patch_code orchestration
+│   │   ├── git_ops.py            ← git stash/pull/branch/commit/push + gh pr create
+│   │   └── build_deploy.py       ← docker build + kind load + kubectl rollout
+│   ├── memory/
+│   │   └── store.py              ← SQLite incident store
+│   ├── tracing/
+│   │   ├── setup.py              ← OTel TracerProvider
+│   │   ├── spans.py              ← agent_span() context manager
+│   │   └── decisions.py          ← DecisionLog — per-incident reasoning audit
+│   ├── agentmetrics/             ← agent's own Prometheus metrics
+│   └── utils/
+│       ├── slo.py                ← check_slos() — pure threshold comparison
+│       ├── verifier.py           ← post-action SLO re-check + MTTR recording
+│       ├── render.py             ← Rich terminal rendering (tables, panels)
+│       └── escalation.py         ← Slack/HTTP escalation webhook
+├── buggy-app/
+│   └── main.py                   ← Flask app with /fault/* endpoints + code bug
+├── k8s/                          ← Kubernetes manifests (agent + app + monitoring)
+├── scripts/
+│   ├── install.sh                ← one-command cluster setup
+│   ├── run.sh                    ← recommended entry point (--demo-patch flag)
+│   └── load_gen.sh               ← background HTTP load generator
+└── docs/
+    ├── architecture.png          ← system diagram (regenerate: python docs/generate_diagram.py)
+    └── generate_diagram.py       ← matplotlib diagram source
 ```

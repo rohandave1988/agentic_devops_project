@@ -5,3 +5,17 @@ prometheus-client>=0.20.0
 rich>=13.7.0
 python-dotenv>=1.0.0
 pytest>=8.0.0
+
+# Multi-agent orchestration
+langgraph>=0.2.0
+langchain-core>=0.2.0
+langchain-anthropic>=0.1.0   # ChatAnthropic (LLM_BACKEND=claude)
+langchain-ollama>=0.1.0      # ChatOllama   (LLM_BACKEND=ollama)
+
+# Observability
+langfuse>=2.0.0,<3.0.0
+
+# OpenTelemetry — distributed tracing
+opentelemetry-api>=1.24.0
+opentelemetry-sdk>=1.24.0
+opentelemetry-exporter-otlp-proto-grpc>=1.24.0   # Jaeger / any OTLP collector

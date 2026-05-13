@@ -48,9 +48,12 @@ spec:
               memory: "512Mi"
 
           # ── Health probes ─────────────────────────────────────────────────
+          # Liveness uses /livez (always 200) — fault injection must NOT restart the pod.
+          # Readiness also uses /livez so the pod stays Ready and receives traffic during faults;
+          # the agent detects problems via Prometheus SLO metrics, not via pod readiness.
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: 3000
             initialDelaySeconds: 10
             periodSeconds: 15
@@ -58,7 +61,7 @@ spec:
 
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
