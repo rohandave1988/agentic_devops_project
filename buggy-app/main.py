@@ -246,7 +246,10 @@ def api_data():
     # _get_avg_response_ms() has no guard for an empty window — programmatic bug.
     # Raises ZeroDivisionError when _latency_samples is empty (after pod start or
     # after /fault/code_bug clears the window).
-    avg_ms = _get_avg_response_ms()
+    if not _latency_samples:   # Add this guard to prevent ZeroDivisionError
+        avg_ms = 0.0           # Return a safe value instead of raising an error
+    else:
+        avg_ms = _get_avg_response_ms()
     return jsonify({
         "data": "ok",
         "avg_response_ms": round(avg_ms, 2),
