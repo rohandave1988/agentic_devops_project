@@ -18,6 +18,16 @@ https://github.com/user-attachments/assets/8b359017-ebe5-49e1-8486-122b81a36813
 **Architecture — Drop 2 (single-call diagnosis + HITL + code patching):**
 <img width="3543" height="1942" alt="architecture diagram" src="https://github.com/user-attachments/assets/a8181615-3ff7-4e8d-8ab8-dea9129d7d4c" />
 
+**Langfuse Screenshots showing tracing for the agents along with the incident 
+**
+
+<img width="1502" height="779" alt="Screenshot 2026-05-15 at 12 40 50 pm" src="https://github.com/user-attachments/assets/44806fb3-b413-4b90-95cb-57ad346ddb48" />
+
+<img width="1509" height="801" alt="Screenshot 2026-05-15 at 12 41 06 pm" src="https://github.com/user-attachments/assets/9c32b134-c88c-492b-8599-7531ececeffc" />
+
+
+
+
 ---
 
 ## What It Does
