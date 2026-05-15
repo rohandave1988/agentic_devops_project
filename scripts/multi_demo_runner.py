@@ -4,7 +4,7 @@ Multi-scenario demo runner — three SLO breach cases for LinkedIn video.
 
 Scenario 1: High Error Rate (5xx surge)       → agent restarts pods
 Scenario 2: P99 Latency Spike (600ms)         → agent scales up
-Scenario 3: Code Bug (ZeroDivisionError)      → agent patches code + opens PR
+Scenario 3: Type Bug (TypeError)      → agent patches code + opens PR
 
 Each scenario: inject fault → warmup rate window → agent detects + fixes → verify.
 No mocks. Real cluster. Real LLM.
@@ -257,11 +257,11 @@ def scenario_latency_spike():
     return metrics
 
 
-def scenario_code_bug():
+def scenario_type_bug():
     console.print()
     console.print(Panel(
-        "[bold magenta]SCENARIO 3[/bold magenta]  —  Code Bug  (ZeroDivisionError)\n\n"
-        "[dim]Fault:     Application raises ZeroDivisionError → 500 on every request[/dim]\n"
+        "[bold magenta]SCENARIO 3[/bold magenta]  —  Type Bug  (TypeError)\n\n"
+        "[dim]Fault:     Application raises TypeError (float + str) → 500 on every request[/dim]\n"
         "[dim]Detection: Error rate + exception stack trace in Loki logs[/dim]\n"
         "[dim]Fix:       CodePatchAgent reads source, writes fix, opens GitHub PR[/dim]",
         border_style="magenta",
@@ -270,8 +270,8 @@ def scenario_code_bug():
     console.print()
 
     _reset()
-    console.print("[bold magenta]  ► Injecting code bug fault (ZeroDivisionError)...[/bold magenta]")
-    console.print(f"    {_curl('/fault/code_bug', 'POST')}")
+    console.print("[bold magenta]  ► Injecting type bug fault (TypeError)...[/bold magenta]")
+    console.print(f"    {_curl('/fault/type_bug', 'POST')}")
 
     stop = threading.Event()
     bg = threading.Thread(target=_traffic_loop, args=(stop,), daemon=True)
@@ -366,7 +366,7 @@ def _show_final_summary(all_metrics: list[dict]):
     rows = [
         ("Error Rate Surge → restart_pods",           "✓", "✓", mttr_vals[0] if len(mttr_vals) > 0 else "—"),
         ("P99 Latency Spike → scale_up",              "✓", "✓", mttr_vals[1] if len(mttr_vals) > 1 else "—"),
-        ("ZeroDivisionError → patch_code (PR)",       "✓", "✓", "PR"),
+        ("TypeError → patch_code (PR)",       "✓", "✓", "PR"),
         ("IndexError (stats) → patch_code (PR)",      "✓", "✓", "PR"),
     ]
     for r in rows:
@@ -414,7 +414,7 @@ def main():
         all_metrics.append(m2)
         time.sleep(5)
 
-        m3 = scenario_code_bug()
+        m3 = scenario_type_bug()
         all_metrics.append(m3)
         time.sleep(5)
 

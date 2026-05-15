@@ -261,10 +261,10 @@ inject_all_pods() {
 # Optional: inject a fault scenario after agent starts
 # ─────────────────────────────────────────────────────────────────────────────
 if $DEMO_PATCH; then
-  step "Demo: patch_code HITL flow (code_bug injection in 45s)"
+  step "Demo: patch_code HITL flow (type_bug injection in 45s)"
   echo ""
   echo -e "  ${CYAN}What to expect:${NC}"
-  echo -e "  1. Code bug injected: _get_avg_response_ms() raises ZeroDivisionError on every request"
+  echo -e "  1. Type bug injected: _format_response_metadata() raises TypeError (float + str) on every request"
   echo -e "  2. SLO breach detected after ~30s rate window fills"
   echo -e "  3. Multi-agent investigation runs"
   echo -e "  4. ${YELLOW}Gate 1${NC}: HITL action prompt — choose patch_code (option 5)"
@@ -275,9 +275,9 @@ if $DEMO_PATCH; then
   (
     sleep 45
     echo ""
-    echo -e "  ${YELLOW}⚡ Injecting code_bug fault on all pods…${NC}"
-    inject_all_pods "fault/code_bug"
-    echo -e "  ${GREEN}✓${NC}  Code bug active — ZeroDivisionError on every /api/data request"
+    echo -e "  ${YELLOW}⚡ Injecting type_bug fault on all pods…${NC}"
+    inject_all_pods "fault/type_bug"
+    echo -e "  ${GREEN}✓${NC}  Code bug active — TypeError on every /api/data request"
     echo -e "       SLO breach visible after ~30s rate window fills"
   ) &
 

@@ -180,8 +180,7 @@ class OrchestratorAgent:
         store,
         incident_id: str,
     ) -> Diagnosis:
-        langfuse_context.update_current_trace(
-            session_id=incident_id,
+        langfuse_context.update_current_observation(
             input={
                 "violations":   violations,
                 "error_rate":   round(metrics.error_rate * 100, 2),
@@ -326,7 +325,7 @@ class OrchestratorAgent:
             },
         )
 
-        langfuse_context.update_current_trace(
+        langfuse_context.update_current_observation(
             output={
                 "action":     diag.suggested_actions[0],
                 "severity":   diag.severity,

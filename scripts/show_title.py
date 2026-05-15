@@ -30,7 +30,7 @@ PANELS = {
     ),
     "3": Panel(
         "[bold magenta]SCENARIO 3[/bold magenta]  —  Code Bug  →  [bold]patch_code[/bold]  +  GitHub PR\n\n"
-        "  [dim]ZeroDivisionError in _get_avg_response_ms — every request returns 500[/dim]\n"
+        "  [dim]TypeError in _format_response_metadata — every request returns 500[/dim]\n"
         "  [dim]LogsAgent reads stack trace, orchestrator selects patch_code[/dim]\n"
         "  [dim]CodePatchAgent: list files → read source → propose fix → git commit → PR[/dim]",
         border_style="magenta", expand=False,

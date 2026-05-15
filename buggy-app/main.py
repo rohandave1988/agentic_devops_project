@@ -45,7 +45,7 @@ _state: dict   = {
     "memory_leak":   False,
     "high_latency":  False,
     "cascade":       False,
-    "code_bug":      False,   # ZeroDivisionError in _get_avg_response_ms (empty window)
+    "type_bug":      False,   # TypeError in _format_response_metadata (float + str)
     "stats_bug":     False,   # IndexError in _compute_percentile (wrong index multiplier)
     "error_rate":    0.0,
     "client_error_rate": 0.0,
@@ -60,49 +60,14 @@ _start_time = time.time()
 
 # Rolling latency window — populated by _after() hook
 _MAX_SAMPLES = 100
-
-# Pre-populated so the app starts healthy by default.
-# /fault/code_bug clears this window to trigger the bug; pod restart also
-# starts with an empty window when CODE_BUG_ACTIVE=1 is set in the Deployment.
 _STARTUP_SAFE_SAMPLES = [20.0, 25.0, 30.0, 22.0, 28.0, 35.0, 18.0, 24.0, 32.0, 26.0]
 _latency_samples: list[float] = list(_STARTUP_SAFE_SAMPLES)
 
-# Honour env var so a Deployment with CODE_BUG_ACTIVE=1 starts broken immediately
-# (persists the bug across pod restarts without needing the HTTP fault endpoint).
-if os.environ.get("CODE_BUG_ACTIVE", "0") == "1":
-    _latency_samples.clear()
-    _state["code_bug"] = True
-
-
-def _get_avg_response_ms() -> float:
-    """Return average of recent response times in ms.
-
-    Programmatic bug: no empty-list guard.
-    Raises ZeroDivisionError whenever _latency_samples is empty — e.g. right
-    after pod start (CODE_BUG_ACTIVE=1) or after /fault/code_bug clears the window.
-    Fix: add  `if not _latency_samples: return 0.0`  before the return.
-    """
-    return sum(_latency_samples) / len(_latency_samples)
-
-
-def _compute_percentile(samples: list, percentile: float) -> float:
-    """Return the p{percentile} value from a sample list.
-
-    BUG: `percentile` is expected in the 0–100 range (e.g. 99 for p99),
-    but the index is computed by multiplying directly without dividing by 100.
-    For percentile=99 and len=100, idx = int(99 * 100) = 9900, which is
-    far beyond the list bounds → IndexError on every call.
-    Fix: change to int((percentile / 100.0) * len(sorted_s)).
-    """
-    if not samples:
-        return 0.0
-    sorted_s = sorted(samples)
-    idx = int(percentile * len(sorted_s))   # BUG: should be (percentile / 100.0) * len
-    return sorted_s[idx]                    # IndexError: list index out of range
+# Honour env var so a Deployment with TYPE_BUG_ACTIVE=1 starts broken immediately.
+if os.environ.get("TYPE_BUG_ACTIVE", "0") == "1":
+    _state["type_bug"] = True
 
 # Env-driven fault activation — simulates a bad deploy that baked in broken config.
-# Set FAULT_CLIENT_ERRORS=1 in the Deployment spec to activate on pod start;
-# rollback removes the env var, new pods start clean.
 if os.environ.get("FAULT_CLIENT_ERRORS", "0") == "1":
     _rate = float(os.environ.get("FAULT_CLIENT_ERRORS_RATE", "0.85"))
     _state["client_errors"]     = True
@@ -115,12 +80,38 @@ _client_requests = 0   # 4xx
 _stats_lock = threading.Lock()
 
 
+def _format_response_metadata(elapsed_ms: float, req_count: int) -> dict:
+    """Build extra fields appended to every /api/data response.
+
+    BUG: concatenates a float with str using +  →  TypeError on every request.
+    Fix: change  elapsed_ms  to  f"{elapsed_ms:.1f}"  (or wrap with str()).
+    """
+    return {
+        "served_by": "buggy-app",
+        "timing":    "completed in " + elapsed_ms + "ms",
+        "request_n": req_count,
+    }
+
+
+def _compute_percentile(samples: list, percentile: float) -> float:
+    """Return the p{percentile} value from a sample list.
+
+    BUG: index computed by multiplying directly without dividing by 100.
+    For percentile=99 and len=100, idx = int(99 * 100) = 9900 → IndexError.
+    Fix: change to int((percentile / 100.0) * len(sorted_s)).
+    """
+    if not samples:
+        return 0.0
+    sorted_s = sorted(samples)
+    idx = int(percentile * len(sorted_s))   # BUG: should be (percentile / 100.0) * len
+    return sorted_s[idx]                    # IndexError: list index out of range
+
+
 def _update_resource_metrics():
-    import psutil, os, signal
+    import psutil
     proc = psutil.Process(os.getpid())
     while True:
         try:
-            # Include child subprocesses (CPU burn workers)
             children = proc.children(recursive=True)
             all_procs = [proc] + children
             cpu = sum(p.cpu_percent(interval=None) for p in all_procs)
@@ -185,24 +176,17 @@ def _handle_exception(e):
 
 @app.route("/livez")
 def livez():
-    """Liveness probe — always 200 as long as the process is alive.
-    Must NOT check fault state; faults are intentional and should not trigger pod restarts.
-    """
     return jsonify({"status": "alive", "uptime": f"{time.time() - _start_time:.0f}s"})
 
 
 @app.route("/healthz")
 def healthz():
-    """Readiness / general health — reflects fault state but never used by liveness probe."""
     with _lock:
         faults = {k: v for k, v in _state.items() if isinstance(v, bool) and v}
     if faults:
         return jsonify({"status": "degraded", "active_faults": list(faults.keys()),
                         "uptime": f"{time.time() - _start_time:.0f}s"})
-    return jsonify({
-        "status": "healthy",
-        "uptime": f"{time.time() - _start_time:.0f}s",
-    })
+    return jsonify({"status": "healthy", "uptime": f"{time.time() - _start_time:.0f}s"})
 
 
 # ── Business endpoint ──────────────────────────────────────────────────────────
@@ -216,6 +200,7 @@ def api_data():
         cascade     = _state["cascade"]
         hi_latency  = _state["high_latency"]
         stats_bug   = _state["stats_bug"]
+        type_bug    = _state["type_bug"]
 
     if hi_latency or cascade:
         time.sleep((latency + random.randint(0, 100)) / 1000)
@@ -227,26 +212,29 @@ def api_data():
         app.logger.error("request failed route=/api/data reason=fault_injection status=500")
         return jsonify({"error": "simulated server fault"}), 500
 
-    # 4xx fault: simulates auth/config breakage (e.g. bad deploy rotated API key)
     if client_rate > 0 and random.random() < client_rate:
         app.logger.warning("request rejected route=/api/data reason=client_error_fault status=403")
         return jsonify({"error": "forbidden — auth config broken (simulated)"}), 403
 
-    # Stats bug: _compute_percentile uses wrong index multiplier → IndexError on every request.
+    # Stats bug: _compute_percentile uses wrong index multiplier → IndexError.
     if stats_bug:
         samples = _latency_samples if _latency_samples else [1.0]
-        p99 = _compute_percentile(samples, 99)   # IndexError: int(99 * N) >> N
+        p99 = _compute_percentile(samples, 99)
         return jsonify({
             "data": "ok",
             "p99_ms": round(p99, 2),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
-    # Always compute average response time.
-    # _get_avg_response_ms() has no guard for an empty window — programmatic bug.
-    # Raises ZeroDivisionError when _latency_samples is empty (after pod start or
-    # after /fault/code_bug clears the window).
-    avg_ms = _get_avg_response_ms()
+    # Type bug: _format_response_metadata concatenates float with str → TypeError.
+    if type_bug:
+        elapsed = (time.time() - request._start) * 1000
+        with _stats_lock:
+            req_n = _total_requests
+        meta = _format_response_metadata(elapsed, req_n)
+        return jsonify({"data": "ok", **meta, "timestamp": datetime.now(timezone.utc).isoformat()})
+
+    avg_ms = sum(_latency_samples) / len(_latency_samples) if _latency_samples else 0.0
     return jsonify({
         "data": "ok",
         "avg_response_ms": round(avg_ms, 2),
@@ -276,7 +264,6 @@ def fault_status():
 
 @app.route("/fault/client_errors", methods=["POST"])
 def fault_client_errors():
-    """Inject 4xx errors — simulates bad deploy that broke auth/config."""
     data = request.get_json(silent=True) or {}
     rate = float(data.get("rate", 0.8))
     with _lock:
@@ -284,49 +271,38 @@ def fault_client_errors():
         _state["client_error_rate"]  = rate
     fault_active_gauge.labels(fault="client_errors").set(1)
     app.logger.warning(f"FAULT_INJECTED fault=client_errors rate={rate} status=403")
-    return jsonify({"fault": "client_errors", "status": "active",
-                    "http_status": 403, "rate": rate,
-                    "note": "simulates broken auth/config post-deploy"})
+    return jsonify({"fault": "client_errors", "status": "active", "http_status": 403, "rate": rate})
 
 
-@app.route("/fault/code_bug", methods=["POST"])
-def fault_code_bug():
-    """Trigger the programmatic bug already present in _get_avg_response_ms().
+@app.route("/fault/type_bug", methods=["POST"])
+def fault_type_bug():
+    """Activate the TypeError bug in _format_response_metadata.
 
-    The function has no empty-list guard (real code defect). Clearing the latency
-    window forces it to fire immediately on every subsequent request.
-    The same crash occurs naturally on pod restart (window starts empty) when
-    the Deployment carries CODE_BUG_ACTIVE=1.
+    Raises TypeError: can only concatenate str (not "float") to str
+    on every /api/data request.
+    Fix: change  elapsed_ms  to  f"{elapsed_ms:.1f}"  inside _format_response_metadata.
     """
-    _latency_samples.clear()
     with _lock:
-        _state["code_bug"] = True
-    fault_active_gauge.labels(fault="code_bug").set(1)
+        _state["type_bug"] = True
+    fault_active_gauge.labels(fault="type_bug").set(1)
     app.logger.error(
-        "FAULT_INJECTED fault=code_bug — "
-        "_get_avg_response_ms will raise ZeroDivisionError (empty latency window)"
+        "FAULT_INJECTED fault=type_bug — "
+        "_format_response_metadata will raise TypeError (float + str concatenation)"
     )
     return jsonify({
-        "fault": "code_bug",
-        "status": "active",
-        "effect": "ZeroDivisionError on every /api/data request (empty latency window)",
-        "persists_on_restart": "yes — set CODE_BUG_ACTIVE=1 in Deployment env",
+        "fault":      "type_bug",
+        "status":     "active",
+        "effect":     "TypeError on every /api/data request (float + str concatenation)",
+        "root_cause": "_format_response_metadata uses + operator instead of f-string for elapsed_ms",
+        "persists_on_restart": "yes — set TYPE_BUG_ACTIVE=1 in Deployment env",
     })
 
 
 @app.route("/fault/stats_bug", methods=["POST"])
 def fault_stats_bug():
-    """Activate a percentile calculation bug: wrong index multiplier → IndexError.
-
-    Simulates a developer shipping _compute_percentile() without dividing
-    percentile by 100, so idx = int(99 * N) immediately overflows the list.
-    Populates the latency window with dummy samples so the bug fires on the
-    very first request (doesn't require any warm-up traffic).
-    """
+    """Activate a percentile calculation bug: wrong index multiplier → IndexError."""
     with _lock:
         _state["stats_bug"] = True
-    # Pre-fill the window so _compute_percentile receives a non-empty list
-    # and the IndexError fires immediately on the first /api/data request.
     if not _latency_samples:
         _latency_samples.extend([float(i) for i in range(1, 51)])
     fault_active_gauge.labels(fault="stats_bug").set(1)
@@ -335,9 +311,9 @@ def fault_stats_bug():
         "_compute_percentile will raise IndexError (wrong percentile index multiplier)"
     )
     return jsonify({
-        "fault": "stats_bug",
-        "status": "active",
-        "effect": "IndexError on every /api/data request (int(99 * N) out of bounds)",
+        "fault":      "stats_bug",
+        "status":     "active",
+        "effect":     "IndexError on every /api/data request (int(99 * N) out of bounds)",
         "root_cause": "_compute_percentile multiplies by percentile instead of dividing by 100",
     })
 
@@ -362,8 +338,6 @@ def fault_cpu():
                             "workers": len(_cpu_processes)})
 
     num_workers = min(os.cpu_count() or 2, 4)
-
-    # Use subprocesses — threads can't bypass the GIL for real CPU pressure
     burn_code = "import math, random\nwhile True: math.sqrt(random.random())"
     for _ in range(num_workers):
         p = subprocess.Popen([sys.executable, "-c", burn_code])
@@ -388,7 +362,6 @@ def fault_memory():
     data        = request.get_json(silent=True) or {}
     mb_per_tick = int(data.get("mb_per_tick", 20))
     interval_s  = int(data.get("interval_ms", 2000)) / 1000
-
     _leak_stop = threading.Event()
 
     def _leak(stop: threading.Event):
@@ -438,29 +411,25 @@ def fault_cascade():
 def fault_reset():
     global _leak_stop, _total_requests, _error_requests
 
-    # Stop CPU workers
     for p in _cpu_processes:
         p.terminate()
     _cpu_processes.clear()
 
-    # Stop memory leak
     if _leak_stop:
         _leak_stop.set()
         _leak_stop = None
     _leaked_blocks.clear()
 
-    # Reset fault state
     with _lock:
         _state.update({
             "error_mode": False, "client_errors": False,
             "cpu_spike": False, "memory_leak": False,
             "high_latency": False, "cascade": False,
-            "code_bug": False, "stats_bug": False,
+            "type_bug": False, "stats_bug": False,
             "error_rate": 0.0, "client_error_rate": 0.0,
             "latency_ms": 0, "cpu_workers": 0, "leaked_chunks": 0,
         })
 
-    # Reset counters
     with _stats_lock:
         _total_requests  = 0
         _error_requests  = 0
@@ -468,11 +437,11 @@ def fault_reset():
     error_rate_gauge.set(0)
     http_4xx_rate_gauge.set(0)
 
-    # Restore safe latency values so _get_avg_response_ms() stops crashing after reset.
     _latency_samples.clear()
     _latency_samples.extend(_STARTUP_SAFE_SAMPLES)
 
-    for f in ("error_mode", "client_errors", "cpu_spike", "memory_leak", "high_latency", "cascade", "code_bug", "stats_bug"):
+    for f in ("error_mode", "client_errors", "cpu_spike", "memory_leak",
+              "high_latency", "cascade", "type_bug", "stats_bug"):
         fault_active_gauge.labels(fault=f).set(0)
 
     app.logger.info("FAULT_RESET all faults cleared")

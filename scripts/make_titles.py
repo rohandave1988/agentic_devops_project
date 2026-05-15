@@ -31,7 +31,7 @@ TITLES = [
      "600ms delay  ·  P99 > 200ms SLO  ·  Agent scales up",
      (241, 250, 140)),  # yellow
 
-    ("title_s3", "SCENARIO 3  —  Code Bug  (ZeroDivisionError)",
+    ("title_s3", "SCENARIO 3  —  Type Bug  (TypeError)",
      "Empty window  ·  CodePatchAgent writes fix  ·  GitHub PR opened",
      (189, 147, 249)),  # purple
 

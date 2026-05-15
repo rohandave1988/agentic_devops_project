@@ -89,6 +89,55 @@ graph TD
 
 ---
 
+## Agent Flow
+
+```mermaid
+flowchart TD
+    A([start.sh]) --> B[scripts/run.sh\nLoki port-forward · load gen · Langfuse]
+    B --> C[agent/main.py — Agent.run\npoll every 10 s]
+
+    C --> D[Perceive\nPrometheus → ClusterMetrics]
+    D --> E{SLO Check}
+    E -- all healthy --> C
+    E -- violations --> F[Hysteresis\nmust be sustained ≥ 20 s]
+    F -- transient --> C
+    F -- sustained --> G
+
+    subgraph trace ["@observe('incident') — one Langfuse trace per incident"]
+        G[generate incident_id] --> H
+
+        subgraph inv ["@observe('investigate') — child span"]
+            H[Fetch logs from Loki\nwait 20 s if Promtail lag] --> I[Single LLM call\nmetrics + logs + history → JSON diagnosis]
+        end
+
+        I --> J{HUMAN_IN_LOOP?}
+        J -- yes --> K[Gate 1: approve action\nat terminal prompt]
+        J -- no  --> L
+        K --> L[DecisionEngine\ncooldown · confidence · bounds]
+
+        L --> M{Action}
+        M -- restart_pods\nscale_up / rollback --> N[Executor\nkubectl API]
+        M -- patch_code --> O
+
+        subgraph patch ["@observe('code-patch-agent') — child span"]
+            O[CodePatchAgent\nReAct loop] --> P[read_source_file\nreplace_in_file\npropose_patch]
+        end
+
+        P --> Q[Gate 2: review unified diff\ny = commit · n = discard]
+        Q -- approved --> R[git commit + push\ngh pr create\nkubectl set image]
+        Q -- discarded --> S[no change]
+
+        N --> T[Store incident\nSQLite]
+        R --> T
+        S --> T
+        T --> U[Verify SLO recovery\nbackground thread · records MTTR]
+    end
+
+    U --> C
+```
+
+---
+
 ## Investigation — Single LLM Call
 
 The investigation step is a single structured LLM call with all context pre-fetched. There is no multi-hop tool loop for diagnosis.
@@ -110,10 +159,10 @@ The prompt gives the LLM a strict decision tree and asks for a single JSON objec
 ```json
 {
   "action": "patch_code",
-  "root_cause": "ZeroDivisionError in _get_avg_response_ms() — empty list",
+  "root_cause": "TypeError in _format_response_metadata() — float + str",
   "severity": "high",
   "confidence": 0.87,
-  "reasoning": "ZeroDivisionError in logs, confirmed 5xx rate at 82%"
+  "reasoning": "TypeError in logs, confirmed 5xx rate at 82%"
 }
 ```
 
@@ -130,7 +179,7 @@ Set `HUMAN_IN_LOOP=true` to activate both gates. Both have `HUMAN_REVIEW_TIMEOUT
 ```
 ╭─ HITL Review ────────────────────────────────────────────────╮
 │ Severity:    HIGH                                             │
-│ Root cause:  ZeroDivisionError in _get_avg_response_ms()     │
+│ Root cause:  TypeError in _format_response_metadata()     │
 │ Confidence:  82%                                             │
 │                                                               │
 │ AI recommends: patch_code                                     │
@@ -178,7 +227,7 @@ CodePatchAgent (own ReAct loop, up to 10 steps)
 
 Preferred path (3 tool calls):
   1. list_source_files()
-  2. read_function("main.py", "_get_avg_response_ms")
+  2. read_source_file("main.py")
      → returns ~15 lines via AST extraction
   3. replace_in_file("main.py", <buggy lines>, <fixed lines>, description, confidence)
      → validates ast.parse() before accepting
@@ -216,12 +265,12 @@ Safety gates on `patch_code`:
 
 ### Programmatic bug injection
 
-The demo bug is a real code defect in `buggy-app/main.py`: `_get_avg_response_ms()` divides by `len(_latency_samples)` with no empty-list guard.
+The demo bug is a real code defect in `buggy-app/main.py`: `_format_response_metadata()` concatenates a `float` with `str` using `+` instead of an f-string, raising `TypeError` on every `/api/data` request.
 
 Activate it two ways:
 ```bash
-curl -X POST http://localhost:30080/fault/code_bug   # HTTP endpoint
-# or set CODE_BUG_ACTIVE=1 in the app's environment
+curl -X POST http://localhost:30080/fault/type_bug   # HTTP endpoint
+# or set TYPE_BUG_ACTIVE=1 in the app's environment
 ```
 
 ---
@@ -265,7 +314,7 @@ Every action passes through `DecisionEngine` before execution. The LLM never cal
 10:23:45  INFO      orchestrator         investigation started — 2 violations: ERROR_RATE_BREACH; LATENCY_P99_BREACH
                                          incident_id=run-1778297  violations=2
 10:23:46  INFO      orchestrator         invoking LLM for diagnosis — model=qwen2.5:7b
-10:23:52  INFO      orchestrator         diagnosis ready — HIGH | patch_code | confidence=87% | ZeroDivisionError in _get_avg_response_ms()
+10:23:52  INFO      orchestrator         diagnosis ready — HIGH | patch_code | confidence=87% | TypeError in _format_response_metadata()
 ```
 
 Per-component accent colors, two-line format (bold message + detail fields), OTel trace ID on every line.
@@ -367,7 +416,7 @@ curl -X POST http://localhost:30080/fault/memory   # memory leak
 curl -X POST http://localhost:30080/fault/latency  # high latency
 
 # Code-level bug (triggers patch_code demo)
-curl -X POST http://localhost:30080/fault/code_bug  # ZeroDivisionError on every request
+curl -X POST http://localhost:30080/fault/type_bug  # TypeError on every request
 
 # Reset
 curl -X POST http://localhost:30080/fault/reset
@@ -379,10 +428,10 @@ curl -X POST http://localhost:30080/fault/reset
 ./scripts/run.sh --demo-patch
 ```
 
-Injects the `code_bug` fault 45s after startup. When the SLO breaches:
-1. Agent collects metrics + logs + history, makes one LLM call, identifies `ZeroDivisionError` in `_get_avg_response_ms()`
+Injects the `type_bug` fault 45s after startup. When the SLO breaches:
+1. Agent collects metrics + logs + history, makes one LLM call, identifies `TypeError` in `_format_response_metadata()`
 2. **Gate 1**: choose `patch_code` at the terminal prompt
-3. `CodePatchAgent` calls `read_function()` to extract the buggy function (~15 lines), calls `replace_in_file()` with the fix
+3. `CodePatchAgent` calls `read_source_file()` to read the buggy function, calls `replace_in_file()` with the fix
 4. **Gate 2**: unified diff shown — type `y` to commit and open a PR
 5. `gh pr create` fires → PR URL printed in logs
 

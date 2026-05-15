@@ -61,8 +61,8 @@ case "$SCENARIO" in
     echo ""
     ;;
   code-bug)
-    echo "► Injecting code bug (ZeroDivisionError)..."
-    curl -s -X POST "${APP_URL}/fault/code_bug"
+    echo "► Injecting type bug (TypeError)..."
+    curl -s -X POST "${APP_URL}/fault/type_bug"
     echo ""
     ;;
   stats-bug)
