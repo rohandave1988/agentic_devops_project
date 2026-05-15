@@ -8,6 +8,10 @@ The agent closes the full loop: **detect → investigate → HITL → safety-gat
 
 <img width="1400" height="820" alt="demo screenshot" src="https://github.com/user-attachments/assets/6e0dabef-48d6-4269-a0c2-f9715a99799c" />
 
+> Full demo (Drop 2): agent detects a TypeError, diagnoses it, writes a one-line fix, and opens a GitHub PR — autonomously.
+
+![Drop 2 demo](docs/demo_drop2.mp4)
+
 **Architecture — Drop 2 (single-call diagnosis + HITL + code patching):**
 <img width="3543" height="1942" alt="architecture diagram" src="https://github.com/user-attachments/assets/a8181615-3ff7-4e8d-8ab8-dea9129d7d4c" />
 
