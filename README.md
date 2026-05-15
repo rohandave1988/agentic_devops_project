@@ -6,6 +6,10 @@ The agent closes the full loop: **detect → investigate → HITL → safety-gat
 
 > **MTTR** (Mean Time To Recovery) — the clock starts the moment an SLO breach is detected, stops when the post-action SLO re-check passes. Stored per incident as a Prometheus histogram (`agent_mttr_seconds`), queryable in Grafana.
 
+
+https://github.com/user-attachments/assets/8b359017-ebe5-49e1-8486-122b81a36813
+
+
 <img width="1400" height="820" alt="demo screenshot" src="https://github.com/user-attachments/assets/6e0dabef-48d6-4269-a0c2-f9715a99799c" />
 
 > Full demo (Drop 2): agent detects a TypeError, diagnoses it, writes a one-line fix, and opens a GitHub PR — autonomously.
