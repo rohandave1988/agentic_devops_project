@@ -235,7 +235,7 @@ def api_data():
     # Stats bug: _compute_percentile uses wrong index multiplier → IndexError on every request.
     if stats_bug:
         samples = _latency_samples if _latency_samples else [1.0]
-        p99 = _compute_percentile(samples, 99)   # IndexError: int(99 * N) >> N
+        p99 = _compute_percentile(samples, 0.99)   # IndexError: int(99 * N) >> N
         return jsonify({
             "data": "ok",
             "p99_ms": round(p99, 2),
