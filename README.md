@@ -15,8 +15,62 @@ https://github.com/user-attachments/assets/8b359017-ebe5-49e1-8486-122b81a36813
 <img width="1400" height="820" alt="demo screenshot" src="https://github.com/user-attachments/assets/6e0dabef-48d6-4269-a0c2-f9715a99799c" />
 
 
-**Architecture — Drop 2 (single-call diagnosis + HITL + code patching):**
-<img width="3543" height="1942" alt="architecture diagram" src="https://github.com/user-attachments/assets/a8181615-3ff7-4e8d-8ab8-dea9129d7d4c" />
+**Architecture:**
+
+```mermaid
+flowchart TB
+    subgraph cluster ["Kubernetes Cluster (kind)"]
+        APP["Live Service\nbuggy-app — Flask"]
+    end
+
+    subgraph observe ["Observability"]
+        PROM["Prometheus\ncollects metrics every 10 s"]
+        LOKI["Loki + Promtail\ncollects application logs"]
+        GRAF["Grafana\ndashboards"]
+    end
+
+    subgraph loop ["Self-Healing Agent  (runs every 10 s)"]
+        S1["① Monitor\nPull metrics + logs\nSkip LLM if all SLOs healthy"]
+        S2["② Diagnose\nOne LLM call with full context\nreturns action · root cause · confidence"]
+        S3["③ Human Approval — Gate 1\nOperator confirms or overrides action\nauto-approves after timeout"]
+        S4["④ Safety Gate\nConfidence threshold · cooldown\nReplica bounds"]
+        S5["⑤ Act\nRestart pods · Scale replicas · Rollback\nor trigger Code Fix Pipeline"]
+        S6["⑥ Verify + Remember\nRe-check SLOs · record MTTR\nStore incident in SQLite"]
+
+        S1 -->|SLO breach detected| S2
+        S2 --> S3 --> S4 --> S5 --> S6
+        S6 -.->|loop| S1
+    end
+
+    subgraph codepath ["Code Fix Pipeline  (only for code bugs)"]
+        CP1["Read source file\nlocate the bug"]
+        CP2["LLM writes the fix\nproduces a code patch"]
+        CP3["Human reviews diff — Gate 2\napprove before any git push"]
+        CP4["Git: branch → commit → push\nGitHub PR opened automatically"]
+
+        CP1 --> CP2 --> CP3 -->|approved| CP4
+        CP3 -->|rejected| DISC["Discarded\nno changes made"]
+    end
+
+    subgraph ext ["External Services"]
+        LLM["LLM\nClaude API / Ollama"]
+        GH["GitHub"]
+        LF["Langfuse\nevery LLM call fully traced"]
+    end
+
+    APP -->|metrics| PROM
+    APP -->|logs| LOKI
+    PROM --> S1
+    LOKI --> S1
+    PROM --> GRAF
+    LOKI --> GRAF
+    S2 <-->|prompt + response| LLM
+    S5 -->|code bug| CP1
+    CP2 <-->|prompt + patch| LLM
+    CP4 --> GH
+    S5 -->|kubectl| APP
+    S2 & CP2 -->|trace every LLM call| LF
+```
 
 **Langfuse Screenshots showing tracing for the agents along with the incident 
 **
@@ -110,47 +164,57 @@ graph TD
 
 ```mermaid
 flowchart TD
-    A([start.sh]) --> B[scripts/run.sh\nLoki port-forward · load gen · Langfuse]
-    B --> C[agent/main.py — Agent.run\npoll every 10 s]
+    A([start.sh]) --> B[scripts/run.sh\nport-forwards · load_gen · Langfuse]
+    B --> C[Agent.run — poll every 10 s]
 
-    C --> D[Perceive\nPrometheus → ClusterMetrics]
+    C --> D[Prometheus ~15 PromQL queries\n→ ClusterMetrics snapshot]
     D --> E{SLO Check}
     E -- all healthy --> C
-    E -- violations --> F[Hysteresis\nmust be sustained ≥ 20 s]
+    E -- violated --> F[Hysteresis — SLOStateTracker\nviolation must sustain ≥ 20 s]
     F -- transient --> C
-    F -- sustained --> G
+    F -- sustained --> trace
 
-    subgraph trace ["@observe('incident') — one Langfuse trace per incident"]
-        G[generate incident_id] --> H
+    subgraph trace ["Langfuse trace — @observe('incident')"]
+        direction TB
 
         subgraph inv ["@observe('investigate') — child span"]
-            H[Fetch logs from Loki\nwait 20 s if Promtail lag] --> I[Single LLM call\nmetrics + logs + history → JSON diagnosis]
+            G[Loki: fetch last 2 min of logs\nwait 20 s + retry if Promtail lag] --> H[SQLite: load last 5 incidents]
+            H --> I[Single LLM call — Claude / Ollama\npre-fetched metrics + logs + history]
+            I --> J[JSON: action · root_cause\nseverity · confidence · reasoning]
         end
 
-        I --> J{HUMAN_IN_LOOP?}
-        J -- yes --> K[Gate 1: approve action\nat terminal prompt]
-        J -- no  --> L
-        K --> L[DecisionEngine\ncooldown · confidence · bounds]
+        J --> K{HITL Gate 1\nHUMAN_IN_LOOP=true?}
+        K -- yes --> L[Terminal prompt\napprove or override action\nauto-approves after timeout]
+        K -- no --> M
+        L --> M
 
-        L --> M{Action}
-        M -- restart_pods\nscale_up / rollback --> N[Executor\nkubectl API]
-        M -- patch_code --> O
+        M[DecisionEngine — safety gates\nconfidence threshold · cooldown\nreplica bounds · ALLOW_CODE_PATCHES]
+        M -- blocked --> N[no_action\naudit log entry]
+        M -- approved --> O{Action}
+
+        O -- restart_pods --> P[kubectl delete pods]
+        O -- scale_up / scale_down --> Q[kubectl patch replicas]
+        O -- rollback --> R[find prev ReplicaSet\nkubectl patch template]
+        O -- patch_code --> patch
 
         subgraph patch ["@observe('code-patch-agent') — child span"]
-            O[CodePatchAgent\nReAct loop] --> P[read_source_file\nreplace_in_file\npropose_patch]
+            S[CodePatchAgent ReAct loop\nlist_source_files · read_function AST\nreplace_in_file · propose_patch]
         end
 
-        P --> Q[Gate 2: review unified diff\ny = commit · n = discard]
-        Q -- approved --> R[git commit + push\ngh pr create\nkubectl set image]
-        Q -- discarded --> S[no change]
+        S --> T{HITL Gate 2\ndiff review}
+        T -- approved --> U[GitOps\nstash → branch → commit → push\ngh pr create → PR URL]
+        T -- rejected --> V[discard — no git ops]
+        U --> W{AUTO_DEPLOY_PATCH?}
+        W -- yes --> X[build image · kubectl set image]
+        W -- no --> Y[PR open — cluster still degraded\nuntil merged + redeployed]
 
-        N --> T[Store incident\nSQLite]
-        R --> T
-        S --> T
-        T --> U[Verify SLO recovery\nbackground thread · records MTTR]
+        P & Q & R & X & V & Y --> Z[SQLite — store incident\nroot_cause · action · severity]
     end
 
-    U --> C
+    Z --> AA[Verify — background thread\ninitial grace · poll every 10 s\nwait for replicas ready before SLO check]
+    AA -- recovered --> AB[record MTTR\norchestrator.record_outcome\nfeedback to episodic memory]
+    AA -- unresolved --> AC[maybe_escalate webhook\norchestrator.record_outcome failed]
+    AB & AC --> C
 ```
 
 ---
