@@ -17,60 +17,7 @@ https://github.com/user-attachments/assets/8b359017-ebe5-49e1-8486-122b81a36813
 
 **Architecture:**
 
-```mermaid
-flowchart TB
-    subgraph cluster ["Kubernetes Cluster (kind)"]
-        APP["Live Service\nbuggy-app — Flask"]
-    end
-
-    subgraph observe ["Observability"]
-        PROM["Prometheus\ncollects metrics every 10 s"]
-        LOKI["Loki + Promtail\ncollects application logs"]
-        GRAF["Grafana\ndashboards"]
-    end
-
-    subgraph loop ["Self-Healing Agent  (runs every 10 s)"]
-        S1["① Monitor\nPull metrics + logs\nSkip LLM if all SLOs healthy"]
-        S2["② Diagnose\nOne LLM call with full context\nreturns action · root cause · confidence"]
-        S3["③ Human Approval — Gate 1\nOperator confirms or overrides action\nauto-approves after timeout"]
-        S4["④ Safety Gate\nConfidence threshold · cooldown\nReplica bounds"]
-        S5["⑤ Act\nRestart pods · Scale replicas · Rollback\nor trigger Code Fix Pipeline"]
-        S6["⑥ Verify + Remember\nRe-check SLOs · record MTTR\nStore incident in SQLite"]
-
-        S1 -->|SLO breach detected| S2
-        S2 --> S3 --> S4 --> S5 --> S6
-        S6 -.->|loop| S1
-    end
-
-    subgraph codepath ["Code Fix Pipeline  (only for code bugs)"]
-        CP1["Read source file\nlocate the bug"]
-        CP2["LLM writes the fix\nproduces a code patch"]
-        CP3["Human reviews diff — Gate 2\napprove before any git push"]
-        CP4["Git: branch → commit → push\nGitHub PR opened automatically"]
-
-        CP1 --> CP2 --> CP3 -->|approved| CP4
-        CP3 -->|rejected| DISC["Discarded\nno changes made"]
-    end
-
-    subgraph ext ["External Services"]
-        LLM["LLM\nClaude API / Ollama"]
-        GH["GitHub"]
-        LF["Langfuse\nevery LLM call fully traced"]
-    end
-
-    APP -->|metrics| PROM
-    APP -->|logs| LOKI
-    PROM --> S1
-    LOKI --> S1
-    PROM --> GRAF
-    LOKI --> GRAF
-    S2 <-->|prompt + response| LLM
-    S5 -->|code bug| CP1
-    CP2 <-->|prompt + patch| LLM
-    CP4 --> GH
-    S5 -->|kubectl| APP
-    S2 & CP2 -->|trace every LLM call| LF
-```
+![Architecture Diagram](docs/architecture_diagram.png)
 
 **Langfuse Screenshots showing tracing for the agents along with the incident 
 **
